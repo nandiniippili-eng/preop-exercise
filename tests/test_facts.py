@@ -170,6 +170,73 @@ def test_structured_entry_corroborated_in_free_text_still_needs_judgment() -> No
     assert group.needs_activity_judgment() is True
 
 
+def test_asa_physical_status_is_not_mistaken_for_aspirin() -> None:
+    # Regression: "ASA physical status: II" is the anesthesiology risk class,
+    # not a mention of the drug aspirin. A document containing only this
+    # phrase must not produce an aspirin DrugMentionGroup at all.
+    sub = submission(
+        documents=[
+            {
+                "doc_id": "d1",
+                "type": "Anesthesia Pre-Assessment",
+                "date": "2026-03-01",
+                "text": "Planned procedure: knee arthroscopy  ASA physical status: II. Airway: Mallampati I.",
+            }
+        ]
+    )
+    assert scan_medication_mentions(sub) == []
+
+
+def test_asa_class_phrasing_is_also_excluded() -> None:
+    sub = submission(
+        documents=[{"doc_id": "d1", "type": "Anesthesia Note", "date": "2026-03-01", "text": "ASA class III."}]
+    )
+    assert scan_medication_mentions(sub) == []
+
+
+def test_real_asa_dosing_mention_still_counts_alongside_physical_status_text() -> None:
+    sub = submission(
+        medications=[{"name": "ASA 81 mg PO daily", "active": True}],
+        documents=[
+            {
+                "doc_id": "d1",
+                "type": "Anesthesia Pre-Assessment",
+                "date": "2026-03-01",
+                "text": "ASA physical status: II. Airway: Mallampati I.",
+            }
+        ],
+    )
+    groups = {g.generic_name: g for g in scan_medication_mentions(sub)}
+    assert "aspirin" in groups
+    assert groups["aspirin"].drug_class == DrugClass.ANTIPLATELET
+    # Only the real dosing mention counted - the physical-status text didn't
+    # also register as a (redundant, but still incorrect) document mention.
+    assert len(groups["aspirin"].document_mentions) == 0
+
+
+def test_dalteparin_brand_and_generic_resolve_to_anticoagulant() -> None:
+    sub = submission(
+        documents=[
+            {
+                "doc_id": "d1",
+                "type": "Hematology Consult",
+                "date": "2026-03-01",
+                "text": "Bridge with Fragmin (dalteparin) per protocol.",
+            }
+        ]
+    )
+    groups = {g.generic_name: g for g in scan_medication_mentions(sub)}
+    assert "dalteparin" in groups
+    assert groups["dalteparin"].drug_class == DrugClass.ANTICOAGULANT
+
+
+def test_dipyridamole_and_aggrenox_resolve_to_antiplatelet() -> None:
+    sub = submission(medications=[{"name": "Aggrenox 25-200 mg PO BID", "active": True}])
+    groups = {g.generic_name: g for g in scan_medication_mentions(sub)}
+    assert "dipyridamole" in groups
+    assert groups["dipyridamole"].drug_class == DrugClass.ANTIPLATELET
+
+
 # -------------------------
 # Vitals (Rule 4) - structured + free text
 # -------------------------

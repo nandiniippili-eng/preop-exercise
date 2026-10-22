@@ -144,8 +144,16 @@ class DrugClass(str, Enum):
 
 
 # Closed brand -> (generic, class) table. Scoped to what this policy needs to
-# distinguish; extensible but intentionally not an exhaustive real-world
-# formulary.
+# distinguish (anticoagulant vs. antiplatelet - Rule 3's true-negative trap),
+# not an exhaustive real-world formulary. Covers, by generic:
+#   Anticoagulants: warfarin (Coumadin, Jantoven); the DOACs apixaban
+#     (Eliquis), rivaroxaban (Xarelto), dabigatran (Pradaxa), edoxaban
+#     (Savaysa, Lixiana); the parenteral/bridging agents enoxaparin
+#     (Lovenox), dalteparin (Fragmin), heparin, fondaparinux (Arixtra).
+#   Antiplatelets: aspirin (ASA); the P2Y12 inhibitors clopidogrel
+#     (Plavix), ticagrelor (Brilinta), prasugrel (Effient); dipyridamole
+#     (Aggrenox, which is aspirin + extended-release dipyridamole - the
+#     brand resolves to the dipyridamole component here).
 DRUG_ALIASES: dict[str, tuple[str, DrugClass]] = {
     "warfarin": ("warfarin", DrugClass.ANTICOAGULANT),
     "coumadin": ("warfarin", DrugClass.ANTICOAGULANT),
@@ -161,6 +169,8 @@ DRUG_ALIASES: dict[str, tuple[str, DrugClass]] = {
     "lixiana": ("edoxaban", DrugClass.ANTICOAGULANT),
     "enoxaparin": ("enoxaparin", DrugClass.ANTICOAGULANT),
     "lovenox": ("enoxaparin", DrugClass.ANTICOAGULANT),
+    "dalteparin": ("dalteparin", DrugClass.ANTICOAGULANT),
+    "fragmin": ("dalteparin", DrugClass.ANTICOAGULANT),
     "heparin": ("heparin", DrugClass.ANTICOAGULANT),
     "fondaparinux": ("fondaparinux", DrugClass.ANTICOAGULANT),
     "arixtra": ("fondaparinux", DrugClass.ANTICOAGULANT),
@@ -172,12 +182,21 @@ DRUG_ALIASES: dict[str, tuple[str, DrugClass]] = {
     "brilinta": ("ticagrelor", DrugClass.ANTIPLATELET),
     "prasugrel": ("prasugrel", DrugClass.ANTIPLATELET),
     "effient": ("prasugrel", DrugClass.ANTIPLATELET),
+    "dipyridamole": ("dipyridamole", DrugClass.ANTIPLATELET),
+    "aggrenox": ("dipyridamole", DrugClass.ANTIPLATELET),
 }
 
 _DRUG_ALIAS_RE = re.compile(
     r"\b(" + "|".join(re.escape(a) for a in sorted(DRUG_ALIASES, key=len, reverse=True)) + r")\b",
     re.IGNORECASE,
 )
+
+# "ASA" collides with the ASA (American Society of Anesthesiologists) physical
+# status classification ("ASA physical status: II", "ASA class III") that
+# appears in nearly every anesthesia note - that is a risk score, not a
+# mention of the drug aspirin. Verified against the full sample dataset: this
+# is the only alias with a real false-positive collision.
+_ASA_CLASS_SUFFIX_RE = re.compile(r"\s*(physical\s+status|class)\b", re.IGNORECASE)
 
 
 class MedicationMention(BaseModel):
@@ -221,7 +240,10 @@ class DrugMentionGroup(BaseModel):
 def _find_drug_matches(text: str) -> list[tuple[str, DrugClass]]:
     found: dict[str, DrugClass] = {}
     for match in _DRUG_ALIAS_RE.finditer(text):
-        generic, drug_class = DRUG_ALIASES[match.group(1).lower()]
+        alias = match.group(1).lower()
+        if alias == "asa" and _ASA_CLASS_SUFFIX_RE.match(text, match.end()):
+            continue  # anesthesiology risk class, not the drug - see comment above the table
+        generic, drug_class = DRUG_ALIASES[alias]
         found[generic] = drug_class
     return list(found.items())
 

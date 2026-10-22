@@ -1,56 +1,18 @@
-"""Shared policy, schema, and prompt helpers for the pre-op triage scripts."""
+"""Shared schemas for the pre-op triage scripts, and the triage_submission entrypoint.
+
+triage_submission is a deterministic rule engine (see rules.py) over facts
+extracted from the submission (see facts.py for the closed-vocabulary /
+structured-field extraction, and judgments.py + policy_facts.py for the
+handful of scoped, schema-constrained LLM calls used only where free-text
+reading comprehension is unavoidable - e.g. which document is the real
+pre-op H&P). No single large LLM call makes the clearance decision.
+"""
 
 from __future__ import annotations
 
-import json
 from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field
-
-# -------------------------
-# Policy + system prompt
-# -------------------------
-
-BASELINE_SYSTEM_PROMPT = """
-You are a clinical operations assistant for pre-op scheduling triage.
-Base decisions only on the policy below. General clinical knowledge may be used to interpret the record (e.g., drug brand names, unit conversions), not to add criteria.
-
-Cadence Surgical Center Pre-Operative Scheduling Policy (effective Jan 1, 2026)
-
-Output exactly one status:
-- READY
-- NEEDS_FOLLOW_UP
-- NOT_CLEARED
-
-Rule 1: Required documentation
-- History and Physical (H&P) must exist and be completed within 30 days of procedure date.
-- Signed Surgical Consent must exist.
-If documentation is missing/outdated -> NEEDS_FOLLOW_UP.
-
-Rule 2: Required testing by procedure risk
-- LOW or MODERATE risk: CBC within 30 days of procedure date.
-- HIGH risk: CBC within 14 days and CMP within 14 days.
-Use only the most recent result for each required test.
-If a required test is missing or outside window -> NEEDS_FOLLOW_UP.
-
-Rule 3: Anticoagulation management
-If the patient is currently taking an anticoagulant, a perioperative anticoagulation plan must be documented and clear.
-If no clear plan is documented -> NEEDS_FOLLOW_UP.
-
-Rule 4: Acute safety exclusions
-If any of the following are present at review time -> NOT_CLEARED:
-- Systolic BP >= 180 mmHg
-- Diastolic BP >= 110 mmHg
-- Temperature > 100.4 F
-Use the most recent relevant vital.
-
-Final determination
-- READY only if all required criteria are satisfied and no exclusions are present.
-- If a required field needed to evaluate a rule is missing/unknown -> NEEDS_FOLLOW_UP.
-
-Output requirements
-- Return exactly one JSON object.
-""".strip()
 
 Decision = Literal["READY", "NEEDS_FOLLOW_UP", "NOT_CLEARED"]
 ProcedureRisk = Literal["LOW", "MODERATE", "HIGH"]
@@ -168,28 +130,18 @@ class TriageOutput(BaseModel):
     explanation: str
 
 
-def triage_output_json_schema() -> dict[str, object]:
-    """Return the JSON schema used for structured model outputs."""
+def _fallback_output(evidence: str) -> TriageOutput:
+    """The policy's own default: unknown/unevaluable -> NEEDS_FOLLOW_UP, never a crash."""
 
-    schema = TriageOutput.model_json_schema()
-    return schema
-
-
-# -------------------------
-# Prompt helpers
-# -------------------------
-
-
-def build_user_prompt(submission: dict[str, object]) -> str:
-    """Format a single submission package as user input."""
-
-    sections = [
-        "Evaluate this patient package for pre-op scheduling readiness using the provided policy.",
-        "Return your response as JSON.",
-        "Submission JSON:",
-        json.dumps(submission, sort_keys=True),
-    ]
-    return "\n".join(sections)
+    return TriageOutput(
+        decision="NEEDS_FOLLOW_UP",
+        issues=[TriageIssue(category="MISSING_REQUIRED_DATA", evidence=evidence)],
+        explanation=(
+            "Automated triage could not fully evaluate this submission; defaulting to "
+            "NEEDS_FOLLOW_UP per policy for missing/unknown required data. "
+            f"Detail: {evidence}"
+        ),
+    )
 
 
 def triage_submission(
@@ -197,41 +149,34 @@ def triage_submission(
     *,
     model: str,
 ) -> TriageOutput:
-    """Naive baseline implementation: single LLM call with JSON response output."""
+    """Deterministic rule-engine triage, with scoped LLM judgment calls for the handful of
+    facts that require reading free text (see policy_facts.py / judgments.py). Always
+    returns a valid TriageOutput: any unexpected failure degrades to the policy's own
+    "missing/unknown required data" default rather than raising.
+    """
 
-    # Import lazily so core utilities remain usable without OpenAI installed.
-    from openai import OpenAI
+    # Imported lazily to avoid a core <-> policy_facts import cycle (policy_facts imports
+    # the schemas defined in this module) and to keep core.py importable without OpenAI
+    # installed when only the schemas are needed.
+    from policy_facts import extract_policy_facts
+    from rules import aggregate_decision, build_explanation, evaluate_all
 
-    if isinstance(submission, PatientSubmission):
-        submission_payload = submission.model_dump()
-    else:
-        submission_payload = PatientSubmission.model_validate(submission).model_dump()
+    try:
+        if isinstance(submission, PatientSubmission):
+            parsed = submission
+        else:
+            parsed = PatientSubmission.model_validate(submission)
+    except Exception as exc:  # pragma: no cover - defensive, submission is pre-validated upstream
+        return _fallback_output(f"Submission failed schema validation: {exc}")
 
-    client = OpenAI()
-    request_kwargs: dict[str, object] = {
-        "model": model,
-        "instructions": BASELINE_SYSTEM_PROMPT,
-        "input": [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": build_user_prompt(submission_payload),
-                    }
-                ],
-            }
-        ],
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "preop_triage_output",
-                "schema": triage_output_json_schema(),
-                "strict": False,
-            }
-        },
-    }
+    try:
+        from openai import OpenAI
 
-    response = client.responses.create(**request_kwargs)
-    return TriageOutput.model_validate_json(response.output_text)
+        client = OpenAI()
+        facts = extract_policy_facts(parsed, client=client, model=model)
+        issues = evaluate_all(facts)
+        decision = aggregate_decision(issues)
+        explanation = build_explanation(decision, issues)
+        return TriageOutput(decision=decision, issues=issues, explanation=explanation)
+    except Exception as exc:  # pragma: no cover - last-resort safety net
+        return _fallback_output(f"Internal error while evaluating submission: {exc}")

@@ -1,142 +1,251 @@
 from __future__ import annotations
 
-import json
+import copy
 import sys
 from types import SimpleNamespace
-from unittest.mock import Mock
 
+import policy_facts
 import pytest
-from pydantic import ValidationError
+from core import PatientSubmission, triage_submission
+from judgments import ActivityJudgmentResult, ConsentJudgmentResult, HPJudgmentResult, PlanJudgmentResult
 
-from core import (
-    BASELINE_SYSTEM_PROMPT,
-    PatientSubmission,
-    TriageOutput,
-    triage_output_json_schema,
-    triage_submission,
-)
-
-
-@pytest.fixture
-def openai_client(monkeypatch: pytest.MonkeyPatch) -> Mock:
-    client = Mock()
-    client.responses.create.return_value = SimpleNamespace(
-        output_text=json.dumps(
-            {
-                "decision": "READY",
-                "issues": [],
-                "explanation": "All required criteria are satisfied.",
-            }
-        ),
-    )
-
-    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda: client))
-    return client
-
-
-@pytest.fixture
-def submission_payload() -> dict[str, object]:
-    return {
-        "patient": {"id": "patient-1"},
-        "procedure": {
-            "case_id": "case-1",
-            "procedure_risk": "LOW",
-            "procedure_date": "2026-02-01",
+READY_SUBMISSION: dict[str, object] = {
+    "patient": {"id": "p1"},
+    "procedure": {
+        "case_id": "c1",
+        "procedure_type": "total knee arthroplasty",
+        "procedure_risk": "MODERATE",
+        "procedure_date": "2026-03-01",
+    },
+    "vitals": [
+        {"type": "blood_pressure", "systolic": 118, "diastolic": 74, "date": "2026-02-24T09:00:00Z"},
+        {"type": "temperature", "value_f": 98.2, "date": "2026-02-24T09:00:00Z"},
+    ],
+    "labs": [
+        {"id": "l1", "code": "CBC", "display": "CBC", "effective_at": "2026-02-20T08:00:00Z", "status": "final"},
+    ],
+    "medications": [],
+    "conditions": [],
+    "documents": [
+        {
+            "doc_id": "hp1",
+            "type": "History and Physical",
+            "date": "2026-02-19",
+            "author": "Dr. X",
+            "text": "Pre-op evaluation complete for planned procedure.",
         },
-        "vitals": [
-            {
-                "type": "blood_pressure",
-                "systolic": 120,
-                "diastolic": 80,
-                "date": "2026-01-25",
-            }
-        ],
-        "labs": [
-            {
-                "code": "CBC",
-                "display": "Complete blood count",
-                "effective_at": "2026-01-20",
-                "status": "final",
-            }
-        ],
-        "medications": [],
-        "conditions": [],
-        "documents": [
-            {
-                "type": "history_and_physical",
-                "date": "2026-01-20",
-                "text": "History and physical completed.",
-            },
-            {
-                "type": "surgical_consent",
-                "date": "2026-01-22",
-                "text": "Signed surgical consent.",
-            },
-        ],
-    }
+        {
+            "doc_id": "consent1",
+            "type": "Surgical Consent",
+            "date": "2026-02-23",
+            "author": "Dr. Y",
+            "text": "Electronic consent obtained and signed by patient for procedure.",
+        },
+    ],
+}
 
 
-def test_triage_submission_returns_structured_output(
-    openai_client: Mock,
-    submission_payload: dict[str, object],
-) -> None:
-    output = triage_submission(submission_payload, model="test-model")
+def ready_submission() -> dict[str, object]:
+    return copy.deepcopy(READY_SUBMISSION)
 
-    assert isinstance(output, TriageOutput)
+
+@pytest.fixture(autouse=True)
+def openai_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """triage_submission does `from openai import OpenAI` lazily; only the client's
+    existence matters here since every judgment call is mocked at the policy_facts
+    wiring level, never reaching client.responses.create.
+    """
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=lambda: object()))
+
+
+@pytest.fixture(autouse=True)
+def default_judgment_mocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Satisfy H&P/consent for READY_SUBMISSION by default; individual tests override
+    whichever mock they care about.
+    """
+
+    def fake_hp(client, *, model, request):
+        return HPJudgmentResult(
+            hp_doc_id="hp1",
+            encounter_date="2026-02-19",
+            evidence_quote="Pre-op evaluation complete for planned procedure.",
+            reasoning="This is the pre-op H&P for the scheduled procedure.",
+        )
+
+    def fake_consent(client, *, model, request):
+        return ConsentJudgmentResult(
+            valid=True,
+            doc_id="consent1",
+            event_date="2026-02-23",
+            evidence_quote="Electronic consent obtained and signed by patient for procedure.",
+            reasoning="Signed consent for the correct procedure.",
+        )
+
+    def fail_if_called(client, *, model, request):
+        raise AssertionError(
+            "anticoagulation judgment call should not be made when no anticoagulant is present"
+        )
+
+    monkeypatch.setattr(policy_facts, "judge_hp_document", fake_hp)
+    monkeypatch.setattr(policy_facts, "judge_consent", fake_consent)
+    monkeypatch.setattr(policy_facts, "judge_medication_activity", fail_if_called)
+    monkeypatch.setattr(policy_facts, "judge_anticoag_plan", fail_if_called)
+
+
+def test_ready_submission_resolves_to_ready() -> None:
+    output = triage_submission(ready_submission(), model="test-model")
     assert output.decision == "READY"
     assert output.issues == []
-    assert output.explanation == "All required criteria are satisfied."
-
-    assert openai_client.responses.create.call_count == 1
-    call = openai_client.responses.create.call_args.kwargs
-    assert call["model"] == "test-model"
-    assert call["instructions"] == BASELINE_SYSTEM_PROMPT
-
-    text_config = call["text"]
-    assert isinstance(text_config, dict)
-    response_format = text_config["format"]
-    assert isinstance(response_format, dict)
-    assert response_format["type"] == "json_schema"
-    assert response_format["name"] == "preop_triage_output"
-    assert response_format["schema"] == triage_output_json_schema()
-    assert response_format["strict"] is False
 
 
-def test_triage_submission_builds_prompt_from_validated_submission(
-    openai_client: Mock,
-    submission_payload: dict[str, object],
-) -> None:
-    submission = PatientSubmission.model_validate(submission_payload)
-
-    triage_submission(submission, model="test-model")
-
-    assert openai_client.responses.create.call_count == 1
-    call = openai_client.responses.create.call_args.kwargs
-    message = call["input"][0]
-    content = message["content"][0]
-    prompt = content["text"]
-
-    assert message["type"] == "message"
-    assert message["role"] == "user"
-    assert content["type"] == "input_text"
-    assert json.loads(prompt.split("Submission JSON:\n", 1)[1]) == submission.model_dump()
+def test_accepts_already_validated_patient_submission() -> None:
+    parsed = PatientSubmission.model_validate(ready_submission())
+    output = triage_submission(parsed, model="test-model")
+    assert output.decision == "READY"
 
 
-def test_triage_submission_rejects_invalid_model_json(
-    openai_client: Mock,
-    submission_payload: dict[str, object],
-) -> None:
-    openai_client.responses.create.return_value = SimpleNamespace(
-        output_text=json.dumps(
-            {
-                "decision": "MAYBE",
-                "issues": [],
-                "explanation": "Not a valid triage decision.",
-            }
+def test_fever_vital_overrides_otherwise_ready_chart_to_not_cleared() -> None:
+    submission = ready_submission()
+    submission["vitals"] = [
+        {"type": "blood_pressure", "systolic": 118, "diastolic": 74, "date": "2026-02-24T09:00:00Z"},
+        {"type": "temperature", "value_f": 101.2, "date": "2026-02-24T09:00:00Z"},
+    ]
+    output = triage_submission(submission, model="test-model")
+    assert output.decision == "NOT_CLEARED"
+    assert any(i.category == "ACUTE_SAFETY_EXCLUSION" for i in output.issues)
+
+
+def test_invalid_consent_judgment_yields_needs_follow_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_consent(client, *, model, request):
+        return ConsentJudgmentResult(
+            valid=False,
+            doc_id=None,
+            event_date=None,
+            evidence_quote="Signature line blank; printed for review.",
+            reasoning="Not yet signed.",
         )
-    )
 
-    with pytest.raises(ValidationError):
-        triage_submission(submission_payload, model="test-model")
+    monkeypatch.setattr(policy_facts, "judge_consent", fake_consent)
 
-    assert openai_client.responses.create.call_count == 1
+    output = triage_submission(ready_submission(), model="test-model")
+
+    assert output.decision == "NEEDS_FOLLOW_UP"
+    assert any(i.category == "REQUIRED_DOCUMENTATION" for i in output.issues)
+
+
+def test_antiplatelet_only_never_triggers_anticoagulation_judgment_calls() -> None:
+    # The default_judgment_mocks fixture raises if judge_medication_activity or
+    # judge_anticoag_plan is ever called; aspirin must never reach Tier 2 at all.
+    submission = ready_submission()
+    submission["medications"] = [{"name": "ASA 81 mg PO daily", "active": True}]
+
+    output = triage_submission(submission, model="test-model")
+
+    assert output.decision == "READY"
+    assert output.issues == []
+
+
+def test_active_anticoagulant_without_adequate_plan_needs_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    submission = ready_submission()
+    submission["medications"] = [{"name": "Xarelto 20 mg PO daily", "active": True}]
+
+    def fake_plan(client, *, model, request):
+        assert request.generic_name == "rivaroxaban"
+        return PlanJudgmentResult(
+            plan_exists_for_this_drug=False,
+            has_hold_instructions=False,
+            has_resume_instructions=False,
+            deferred_to_surgical_team=False,
+            evidence_quote="No management plan found in the chart.",
+            reasoning="No document discusses stopping or resuming rivaroxaban.",
+        )
+
+    monkeypatch.setattr(policy_facts, "judge_anticoag_plan", fake_plan)
+    # active=True with no document mentions is a clean structured signal -> no
+    # activity judgment call needed; judge_medication_activity should not be hit.
+
+    output = triage_submission(submission, model="test-model")
+
+    assert output.decision == "NEEDS_FOLLOW_UP"
+    assert any(i.category == "ANTICOAGULATION_MANAGEMENT" for i in output.issues)
+
+
+def test_active_anticoagulant_with_adequate_plan_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    submission = ready_submission()
+    submission["medications"] = [{"name": "Xarelto 20 mg PO daily", "active": True}]
+
+    def fake_plan(client, *, model, request):
+        return PlanJudgmentResult(
+            plan_exists_for_this_drug=True,
+            has_hold_instructions=True,
+            has_resume_instructions=True,
+            deferred_to_surgical_team=False,
+            evidence_quote="Hold 2 days before, resume 24-48h after.",
+            reasoning="Clear hold and resume instructions for rivaroxaban.",
+        )
+
+    monkeypatch.setattr(policy_facts, "judge_anticoag_plan", fake_plan)
+
+    output = triage_submission(submission, model="test-model")
+
+    assert output.decision == "READY"
+
+
+def test_unconfirmed_medication_activity_yields_missing_required_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    submission = ready_submission()
+    # Blank `active` forces a Tier 2 activity judgment call.
+    submission["medications"] = [{"name": "Coumadin 5 mg PO daily", "active": None}]
+
+    def fake_activity(client, *, model, request):
+        assert request.generic_name == "warfarin"
+        return ActivityJudgmentResult(
+            active=None,
+            evidence_quote="Patient could not confirm whether still taking it.",
+            reasoning="Genuinely unconfirmable from the chart.",
+        )
+
+    monkeypatch.setattr(policy_facts, "judge_medication_activity", fake_activity)
+
+    output = triage_submission(submission, model="test-model")
+
+    assert output.decision == "NEEDS_FOLLOW_UP"
+    assert any(i.category == "MISSING_REQUIRED_DATA" for i in output.issues)
+
+
+def test_all_judgment_calls_exhausted_still_returns_valid_needs_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(policy_facts, "judge_hp_document", lambda client, *, model, request: None)
+    monkeypatch.setattr(policy_facts, "judge_consent", lambda client, *, model, request: None)
+
+    output = triage_submission(ready_submission(), model="test-model")
+
+    assert output.decision == "NEEDS_FOLLOW_UP"
+    categories = {i.category for i in output.issues}
+    assert "MISSING_REQUIRED_DATA" in categories
+
+
+def test_internal_error_never_raises_and_defaults_to_needs_follow_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(submission, *, client, model):
+        raise RuntimeError("simulated internal failure")
+
+    monkeypatch.setattr("policy_facts.extract_policy_facts", boom)
+
+    output = triage_submission(ready_submission(), model="test-model")
+
+    assert output.decision == "NEEDS_FOLLOW_UP"
+    assert output.issues[0].category == "MISSING_REQUIRED_DATA"
+    assert "simulated internal failure" in output.issues[0].evidence
+
+
+def test_malformed_submission_never_raises() -> None:
+    output = triage_submission({"not": "a valid submission shape at all", "procedure": "oops"}, model="test-model")
+    assert output.decision == "NEEDS_FOLLOW_UP"
+    assert output.issues[0].category == "MISSING_REQUIRED_DATA"

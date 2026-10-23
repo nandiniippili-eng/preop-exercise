@@ -37,6 +37,7 @@ class Provenance(BaseModel):
 
     source: Literal["structured_field", "document_text"]
     doc_id: str | None = None
+    doc_type: str | None = None  # the document's raw `type` field, when source is a document
     quote: str
     asserted_at: datetime | None = None
 
@@ -287,6 +288,7 @@ def _mentions_from_document(doc: Document) -> list[MedicationMention]:
                 provenance=Provenance(
                     source="document_text",
                     doc_id=doc.doc_id,
+                    doc_type=doc.type,
                     quote=_excerpt_at(text, match.start(), match.end()),
                     asserted_at=doc_dt,
                 ),
@@ -391,7 +393,7 @@ def _line_containing(text: str, pos: int) -> str:
 
 
 def extract_vitals_from_text(
-    text: str, *, doc_id: str | None, fallback_date: datetime
+    text: str, *, doc_id: str | None, fallback_date: datetime, doc_type: str | None = None
 ) -> list[VitalReading]:
     """Best-effort extraction of BP/temperature readings embedded in clinical note text.
 
@@ -424,6 +426,7 @@ def extract_vitals_from_text(
                 provenance=Provenance(
                     source="document_text",
                     doc_id=doc_id,
+                    doc_type=doc_type,
                     quote=_line_containing(text, match.start()),
                     asserted_at=asserted_at,
                 ),
@@ -445,6 +448,7 @@ def extract_vitals_from_text(
                 provenance=Provenance(
                     source="document_text",
                     doc_id=doc_id,
+                    doc_type=doc_type,
                     quote=_line_containing(text, match.start()),
                     asserted_at=asserted_at,
                 ),
@@ -504,7 +508,9 @@ def extract_vitals(submission: PatientSubmission) -> VitalsFact:
         doc_dt = parse_dt(doc.date)
         if doc_dt is None:
             continue
-        for reading in extract_vitals_from_text(doc.text, doc_id=doc.doc_id, fallback_date=doc_dt):
+        for reading in extract_vitals_from_text(
+            doc.text, doc_id=doc.doc_id, fallback_date=doc_dt, doc_type=doc.type
+        ):
             if reading.kind == "blood_pressure":
                 blood_pressure.append(reading)
             else:

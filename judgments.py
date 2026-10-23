@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 MAX_ATTEMPTS = 2
 
@@ -48,6 +48,13 @@ pre-operative evaluation for this procedure.
 If no document in the provided list qualifies, return hp_doc_id as null.
 Always ground your answer in a short exact quote from the chosen document (or
 explain why none qualify) and give brief reasoning.
+
+Also list every OTHER document you genuinely weighed as a plausible candidate
+before ruling it out (not every document in the list - only ones a reasonable
+reviewer might have mistaken for the real pre-op H&P), each as a short
+"<doc_id>: <why it was rejected>" string. Leave this empty if there was no
+real ambiguity (e.g. only one document could plausibly be the H&P at all).
+
 Respond with JSON matching the given schema only.
 """.strip()
 
@@ -70,6 +77,7 @@ class HPJudgmentResult(BaseModel):
     encounter_date: str | None
     evidence_quote: str
     reasoning: str
+    rejected_candidates: list[str] = Field(default_factory=list)
 
 
 # -------------------------
@@ -92,6 +100,13 @@ home for review and only later superseded by a signed one.
 
 If no document qualifies, return valid=false and doc_id=null.
 Always ground your answer in a short exact quote and give brief reasoning.
+
+Also list every OTHER consent-related document you genuinely weighed before
+ruling it out (an earlier pending/declined attempt, a consent for the wrong
+procedure, etc.) - not every document in the list, only real candidates -
+each as a short "<doc_id>: <why it was rejected>" string. Leave this empty if
+there was no real ambiguity (e.g. only one consent event exists at all).
+
 Respond with JSON matching the given schema only.
 """.strip()
 
@@ -113,6 +128,7 @@ class ConsentJudgmentResult(BaseModel):
     event_date: str | None
     evidence_quote: str
     reasoning: str
+    rejected_candidates: list[str] = Field(default_factory=list)
 
 
 # -------------------------

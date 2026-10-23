@@ -6,7 +6,10 @@ __pycache__/
 venv/
 env/
 .env/
-.env 
+.env
+
+# Local API key (never committed)
+.openai_key
 
 # Python tooling
 .pytest_cache/

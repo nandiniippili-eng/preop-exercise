@@ -15,6 +15,7 @@ from judgments import (
     HPJudgmentResult,
     PlanJudgmentDocument,
     PlanJudgmentRequest,
+    PlanJudgmentResult,
     _call_judgment,
     judge_anticoag_plan,
     judge_consent,
@@ -215,6 +216,7 @@ def test_judge_medication_activity_returns_typed_result() -> None:
     client.responses.create.return_value = _response(
         {
             "active": None,
+            "bridging_agent_only": False,
             "evidence_quote": "Pharmacy fill history was requested; patient unsure.",
             "reasoning": "Active status is explicitly unconfirmed in the chart.",
         }
@@ -254,3 +256,45 @@ def test_judge_anticoag_plan_returns_typed_result_and_computes_adequacy() -> Non
 
     assert result is not None
     assert result.is_adequate is False  # missing resume instructions
+
+
+def test_plan_attributing_a_concrete_resume_instruction_to_the_surgical_team_is_adequate() -> None:
+    # Regression: real production evidence (case_00000/case_00037 in the sample
+    # dataset) where "per surgical team" is attached to a CONCRETE 24-48 hour
+    # resume window, not a genuine open-ended deferral. A correctly-behaving
+    # judgment call must not set deferred_to_surgical_team=true just because
+    # that phrase appears - this test locks in that is_adequate reads such a
+    # result as adequate. (The actual classification fix lives in
+    # PLAN_JUDGMENT_SYSTEM_PROMPT, which guides the live model to make this
+    # distinction; this test guards the is_adequate contract against this
+    # exact real scenario, since the model call itself isn't exercised here.)
+    result = PlanJudgmentResult(
+        plan_exists_for_this_drug=True,
+        has_hold_instructions=True,
+        has_resume_instructions=True,
+        deferred_to_surgical_team=False,
+        evidence_quote=(
+            "Hold Xarelto for the 2 days before surgery (last dose 04/04/2026; no doses "
+            "in the 48 hours prior). Resume Xarelto 24-48 hours after surgery once "
+            "hemostasis is secure, per surgical team."
+        ),
+        reasoning="Concrete hold and resume timeframes are both given; 'per surgical "
+        "team' only attributes who carries out the resume, it does not leave the "
+        "timing open-ended.",
+    )
+    assert result.is_adequate is True
+
+
+def test_plan_with_no_concrete_timing_at_all_is_still_inadequate_even_without_the_phrase() -> None:
+    # Contrast case: a plan that is genuinely open-ended (no timeframe for the
+    # deferred half) stays inadequate regardless of exact wording.
+    result = PlanJudgmentResult(
+        plan_exists_for_this_drug=True,
+        has_hold_instructions=True,
+        has_resume_instructions=False,
+        deferred_to_surgical_team=True,
+        evidence_quote="Hold 2 days before surgery. Resume timing will be addressed "
+        "after surgery.",
+        reasoning="No concrete resume timeframe or criterion is given anywhere.",
+    )
+    assert result.is_adequate is False

@@ -265,6 +265,28 @@ def test_inactive_anticoagulant_needs_no_plan() -> None:
     assert categories(facts) == set()
 
 
+def test_bridging_agent_only_needs_no_issue_even_though_active() -> None:
+    # Regression (case_00004 in the sample dataset): "stop warfarin 5 days
+    # before with enoxaparin bridging, resume the evening of surgery" mentions
+    # enoxaparin only as the bridge used while warfarin is held - it is not
+    # the patient's own standing home medication and must not be held to
+    # Rule 3's "needs its own documented plan" requirement. plan_checked
+    # stays False here (policy_facts gates the plan call on this flag), so
+    # this also proves rules.py doesn't fall through and treat the unchecked
+    # plan as missing/inadequate.
+    facts = make_facts(
+        anticoagulants=[
+            ResolvedAnticoagulant(
+                generic_name="enoxaparin",
+                active=True,
+                activity_evidence="mentioned only as the bridge while warfarin is held",
+                bridging_agent_only=True,
+            )
+        ]
+    )
+    assert categories(facts) == set()
+
+
 def test_active_anticoagulant_with_adequate_plan_has_no_issue() -> None:
     facts = make_facts(
         anticoagulants=[

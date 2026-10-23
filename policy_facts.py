@@ -63,6 +63,7 @@ class ResolvedAnticoagulant(BaseModel):
     active: bool | None
     activity_evidence: str
     activity_unresolved: bool = False
+    bridging_agent_only: bool = False
     plan_checked: bool = False
     plan_adequate: bool | None = None
     plan_evidence: str | None = None
@@ -172,9 +173,10 @@ def _resolve_anticoagulant(
             generic_name=group.generic_name,
             active=result.active,
             activity_evidence=result.evidence_quote,
+            bridging_agent_only=result.bridging_agent_only,
         )
 
-    if resolved.active is True:
+    if resolved.active is True and not resolved.bridging_agent_only:
         resolved.plan_checked = True
         plan_request = PlanJudgmentRequest(
             generic_name=group.generic_name,

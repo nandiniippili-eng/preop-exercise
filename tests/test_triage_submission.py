@@ -194,6 +194,48 @@ def test_active_anticoagulant_with_adequate_plan_is_ready(monkeypatch: pytest.Mo
     assert output.decision == "READY"
 
 
+def test_bridging_agent_only_skips_plan_judgment_call_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression (case_00004): enoxaparin mentioned only as a perioperative
+    # bridge for warfarin must never reach its own plan-adequacy call - there
+    # is never a standalone "hold/resume enoxaparin" plan to find, so asking
+    # would always (wrongly) come back inadequate. The activity judgment call
+    # is what flags this via bridging_agent_only=True.
+    submission = ready_submission()
+    submission["documents"].append(
+        {
+            "doc_id": "consult1",
+            "type": "Hematology Consultation",
+            "date": "2026-02-24",
+            "author": "Dr. Z",
+            "text": "Perioperative enoxaparin bridging planned per protocol.",
+        }
+    )
+
+    def fake_activity(client, *, model, request):
+        assert request.generic_name == "enoxaparin"
+        return ActivityJudgmentResult(
+            active=True,
+            bridging_agent_only=True,
+            evidence_quote="enoxaparin bridging",
+            reasoning="Only mentioned as the bridge therapy within the warfarin plan.",
+        )
+
+    def fail_if_plan_called(client, *, model, request):
+        raise AssertionError(
+            "plan-adequacy call should never be made for a bridging-only agent"
+        )
+
+    monkeypatch.setattr(policy_facts, "judge_medication_activity", fake_activity)
+    monkeypatch.setattr(policy_facts, "judge_anticoag_plan", fail_if_plan_called)
+
+    output = triage_submission(submission, model="test-model")
+
+    assert output.decision == "READY"
+    assert output.issues == []
+
+
 def test_unconfirmed_medication_activity_yields_missing_required_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -205,6 +247,7 @@ def test_unconfirmed_medication_activity_yields_missing_required_data(
         assert request.generic_name == "warfarin"
         return ActivityJudgmentResult(
             active=None,
+            bridging_agent_only=False,
             evidence_quote="Patient could not confirm whether still taking it.",
             reasoning="Genuinely unconfirmable from the chart.",
         )

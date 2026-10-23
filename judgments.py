@@ -136,6 +136,19 @@ example, conflicting information with no way to tell which is current, or an
 explicit statement that status is unconfirmed), return active as null - do NOT
 guess.
 
+Separately, decide whether this drug is only a perioperative BRIDGING AGENT
+named inside another anticoagulant's management plan, rather than the
+patient's own independently-prescribed home medication. For example, "stop
+warfarin 5 days before surgery with enoxaparin bridging, resume warfarin the
+evening of surgery" mentions enoxaparin only as the bridge therapy used while
+warfarin is held - the patient is not independently prescribed enoxaparin as
+a standing home medication, and it does not need its own separate
+hold/resume plan the way warfarin does. Set bridging_agent_only=true in that
+case. If the drug is the patient's own standing anticoagulant (the one being
+held and resumed, not the bridge used while holding something else), set
+bridging_agent_only=false, even if a bridging agent is also mentioned
+alongside it.
+
 Always ground your answer in a short exact quote and give brief reasoning.
 Respond with JSON matching the given schema only.
 """.strip()
@@ -151,6 +164,7 @@ class ActivityJudgmentRequest(BaseModel):
 
 class ActivityJudgmentResult(BaseModel):
     active: bool | None
+    bridging_agent_only: bool
     evidence_quote: str
     reasoning: str
 
@@ -171,9 +185,19 @@ An adequate plan must satisfy ALL of the following:
 (b) It gives clear instructions for holding/stopping the drug before surgery.
 (c) It gives clear instructions for resuming the drug after surgery.
 
-A plan that defers the decision to the surgical team without specifics (e.g.
-"will be addressed after surgery", "up to the surgical team to decide",
-"recommendations will follow") is NOT adequate for whichever half it defers.
+A plan that defers the decision to the surgical team WITHOUT giving any
+concrete timeframe or criterion (e.g. "will be addressed after surgery", "up
+to the surgical team to decide", "recommendations will follow", "to be
+determined") is NOT adequate for whichever half it defers.
+
+Do NOT treat a plan as deferred merely because it attributes or credits an
+instruction to the surgical team or a protocol, as long as a concrete
+timeframe or criterion is actually stated. For example: "resume 24-48 hours
+after surgery once hemostasis is secure, per surgical team" IS a complete,
+adequate resume instruction - "per surgical team" here only names who
+carries it out, it does not erase the concrete 24-48 hour timeframe already
+given. Only set deferred_to_surgical_team=true when the instruction itself
+is genuinely open-ended, with no timeframe or criterion stated anywhere.
 
 If there is no plan for this drug at all, set plan_exists_for_this_drug to
 false and the other boolean fields to false.

@@ -210,6 +210,8 @@ def evaluate_anticoagulation(facts: PolicyFacts) -> list[TriageIssue]:
             continue
         if ac.active is False:
             continue  # not currently active -> Rule 3 does not apply
+        if ac.bridging_agent_only:
+            continue  # a bridging therapy within another drug's plan, not its own home med
 
         if ac.plan_unresolved:
             issues.append(

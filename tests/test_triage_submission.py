@@ -285,7 +285,7 @@ def test_internal_error_never_raises_and_defaults_to_needs_follow_up(
 
     assert output.decision == "NEEDS_FOLLOW_UP"
     assert output.issues[0].category == "MISSING_REQUIRED_DATA"
-    assert "simulated internal failure" in output.issues[0].evidence
+    assert "simulated internal failure" in output.issues[0].notes
 
 
 def test_malformed_submission_never_raises() -> None:

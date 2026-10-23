@@ -202,7 +202,7 @@ def test_high_risk_requires_both_cbc_and_cmp_independently() -> None:
     issues = evaluate_all(facts)
     testing_issues = [i for i in issues if i.category == "REQUIRED_TESTING"]
     assert len(testing_issues) == 1
-    assert "CMP" in testing_issues[0].evidence
+    assert "CMP" in testing_issues[0].findings or "CMP" in testing_issues[0].policy
 
 
 def test_entered_in_error_is_excluded_from_testing_evaluation() -> None:
@@ -374,4 +374,4 @@ def test_multiple_anticoagulants_evaluated_independently() -> None:
     issues = evaluate_all(facts)
     management_issues = [i for i in issues if i.category == "ANTICOAGULATION_MANAGEMENT"]
     assert len(management_issues) == 1
-    assert "apixaban" in management_issues[0].evidence
+    assert "apixaban" in management_issues[0].findings

@@ -117,10 +117,27 @@ class PatientSubmission(BaseModel):
     documents: list[Document] = Field(default_factory=list)
     metadata: SubmissionMetadata | None = None
 
+class EvidenceSource(BaseModel):
+    """Where a piece of evidence came from, for a human reviewer to jump to it fast."""
+
+    kind: Literal["structured_field", "document_text", "llm_judgment"]
+    doc_id: str | None = None
+    doc_type: str | None = None
+
 class TriageIssue(BaseModel):
+    """A structured evidence packet, not a prose string - every field is populated
+    from data the extraction layer already computed, never re-derived here."""
 
     category: IssueCategory
-    evidence: str
+    policy: str  # the specific policy clause this cites
+    findings: str  # the actual values compared (dates, counts, thresholds)
+    source: EvidenceSource
+    notes: str  # a direct quote from the source record
+    sample: list[str] | None = None  # other candidates that competed, if any existed
+    confidence: Literal["high", "medium", "low"]
+    # high: zero or one candidate existed, no ambiguity in selection.
+    # medium: multiple candidates existed and one had to be chosen.
+    # low: the underlying resolution failed/was exhausted (unresolved).
 
 class TriageOutput(BaseModel):
     """Structured output contract for triage responses."""
@@ -130,16 +147,27 @@ class TriageOutput(BaseModel):
     explanation: str
 
 
-def _fallback_output(evidence: str) -> TriageOutput:
+def _fallback_output(detail: str) -> TriageOutput:
     """The policy's own default: unknown/unevaluable -> NEEDS_FOLLOW_UP, never a crash."""
 
     return TriageOutput(
         decision="NEEDS_FOLLOW_UP",
-        issues=[TriageIssue(category="MISSING_REQUIRED_DATA", evidence=evidence)],
+        issues=[
+            TriageIssue(
+                category="MISSING_REQUIRED_DATA",
+                policy="Final Clearance Determination - a required field must be "
+                "known to evaluate a rule.",
+                findings="Automated triage could not fully evaluate this submission.",
+                source=EvidenceSource(kind="structured_field"),
+                notes=detail,
+                sample=None,
+                confidence="low",
+            )
+        ],
         explanation=(
             "Automated triage could not fully evaluate this submission; defaulting to "
             "NEEDS_FOLLOW_UP per policy for missing/unknown required data. "
-            f"Detail: {evidence}"
+            f"Detail: {detail}"
         ),
     )
 

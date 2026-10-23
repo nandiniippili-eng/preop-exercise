@@ -71,13 +71,43 @@ def _fmt_pct(n: int, total: int) -> str:
 
 
 def _fmt_issues(issues: list[dict] | None) -> str:
-    """Render issues without assuming an evidence format (it is implementation-defined)."""
+    """Render issues. Supports the structured evidence-packet shape (category,
+    policy, findings, source, notes, sample, confidence) and falls back to the
+    older free-form shape (description/evidence) for any older report files.
+    """
 
     if not issues:
         return "(none)"
     lines: list[str] = []
     for i, iss in enumerate(issues, 1):
         cat = iss.get("category", "?")
+
+        if "findings" in iss or "policy" in iss:
+            findings = iss.get("findings", "")
+            confidence = iss.get("confidence")
+            header = f"  {i}. [{cat}] {findings}"
+            if confidence:
+                header += f"  (confidence: {confidence})"
+            block = [header]
+            if iss.get("policy"):
+                block.append(f"     policy: {iss['policy']}")
+            source = iss.get("source") or {}
+            if source:
+                src_bits = [f"kind={source.get('kind', '?')}"]
+                if source.get("doc_id"):
+                    src_bits.append(f"doc_id={source['doc_id']}")
+                if source.get("doc_type"):
+                    src_bits.append(f"doc_type={source['doc_type']}")
+                block.append(f"     source: {', '.join(src_bits)}")
+            if iss.get("notes"):
+                block.append(f'     notes: "{iss["notes"]}"')
+            sample = iss.get("sample")
+            if sample:
+                block.append(f"     other candidates considered: {'; '.join(sample)}")
+            lines.append(escape("\n".join(block)))
+            continue
+
+        # Older free-form shape (description/evidence string or arbitrary object).
         desc = iss.get("description", "")
         line = f"  {i}. [{cat}] {desc}"
         evidence = iss.get("evidence")

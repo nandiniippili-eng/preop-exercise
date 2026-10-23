@@ -24,12 +24,33 @@ from pydantic import BaseModel, Field, ValidationError
 
 MAX_ATTEMPTS = 2
 
+# Shared quote-discipline instruction injected into every judgment prompt below.
+# A pre-op nurse reviews every non-READY case against evidence_quote directly, so
+# it has to be literally findable in the record, not a model-composed summary -
+# this is what keeps the evidence packet human-verifiable rather than just
+# plausible-sounding.
+QUOTE_DISCIPLINE = """
+evidence_quote must be copied character-for-character from ONE contiguous span
+of a single source document - never combine or stitch together text from
+different parts of a document or from different documents, and never insert
+an ellipsis ("...") to splice separate passages together. Keep it to the
+shortest single passage (typically one sentence) that actually supports your
+answer. If the supporting fact is spread across more than one place in the
+record, pick the single most decisive sentence for evidence_quote and put any
+additional context in `reasoning` instead - do not merge multiple passages
+into the quote.
+If there is nothing in the record to quote (e.g. no plan exists at all, no
+document qualifies), say so plainly in evidence_quote (e.g. "No such plan
+found in the chart.") rather than inventing or stitching together an
+unrelated quote.
+""".strip()
+
 
 # -------------------------
 # 1. H&P document identity
 # -------------------------
 
-HP_JUDGMENT_SYSTEM_PROMPT = """
+HP_JUDGMENT_SYSTEM_PROMPT = f"""
 You resolve which single document, if any, is the patient's valid pre-operative
 History & Physical (H&P) for the scheduled procedure.
 
@@ -46,8 +67,8 @@ When more than one document could qualify, pick the one that is actually the
 pre-operative evaluation for this procedure.
 
 If no document in the provided list qualifies, return hp_doc_id as null.
-Always ground your answer in a short exact quote from the chosen document (or
-explain why none qualify) and give brief reasoning.
+{QUOTE_DISCIPLINE}
+Give brief reasoning as well.
 
 Also list every OTHER document you genuinely weighed as a plausible candidate
 before ruling it out (not every document in the list - only ones a reasonable
@@ -84,7 +105,7 @@ class HPJudgmentResult(BaseModel):
 # 2. Consent validity
 # -------------------------
 
-CONSENT_JUDGMENT_SYSTEM_PROMPT = """
+CONSENT_JUDGMENT_SYSTEM_PROMPT = f"""
 You determine whether there is a currently valid, patient-signed surgical
 consent for the scheduled procedure.
 
@@ -99,7 +120,8 @@ event governs, even if an earlier attempt was declined, left pending, or taken
 home for review and only later superseded by a signed one.
 
 If no document qualifies, return valid=false and doc_id=null.
-Always ground your answer in a short exact quote and give brief reasoning.
+{QUOTE_DISCIPLINE}
+Give brief reasoning as well.
 
 Also list every OTHER consent-related document you genuinely weighed before
 ruling it out (an earlier pending/declined attempt, a consent for the wrong
@@ -135,7 +157,7 @@ class ConsentJudgmentResult(BaseModel):
 # 3a. Medication activity resolution
 # -------------------------
 
-ACTIVITY_JUDGMENT_SYSTEM_PROMPT = """
+ACTIVITY_JUDGMENT_SYSTEM_PROMPT = f"""
 You determine whether a specific medication is CURRENTLY being taken by the
 patient, using a structured medication-list entry (if any) and any mentions of
 it found in the clinical documents.
@@ -165,7 +187,8 @@ held and resumed, not the bridge used while holding something else), set
 bridging_agent_only=false, even if a bridging agent is also mentioned
 alongside it.
 
-Always ground your answer in a short exact quote and give brief reasoning.
+{QUOTE_DISCIPLINE}
+Give brief reasoning as well.
 Respond with JSON matching the given schema only.
 """.strip()
 
@@ -189,7 +212,7 @@ class ActivityJudgmentResult(BaseModel):
 # 3b. Anticoagulation plan adequacy
 # -------------------------
 
-PLAN_JUDGMENT_SYSTEM_PROMPT = """
+PLAN_JUDGMENT_SYSTEM_PROMPT = f"""
 You evaluate whether the chart contains an adequate documented perioperative
 management plan for one specific anticoagulant the patient is currently
 taking.
@@ -218,7 +241,8 @@ is genuinely open-ended, with no timeframe or criterion stated anywhere.
 If there is no plan for this drug at all, set plan_exists_for_this_drug to
 false and the other boolean fields to false.
 
-Always ground your answer in a short exact quote and give brief reasoning.
+{QUOTE_DISCIPLINE}
+Give brief reasoning as well.
 Respond with JSON matching the given schema only.
 """.strip()
 

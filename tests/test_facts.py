@@ -194,6 +194,34 @@ def test_asa_class_phrasing_is_also_excluded() -> None:
     assert scan_medication_mentions(sub) == []
 
 
+def test_document_mention_quote_anchors_on_the_brand_name_actually_in_the_text() -> None:
+    # Regression: the quote must be built from where the alias ("Xarelto") was
+    # actually found, not from re-searching the text for the canonical generic
+    # name ("rivaroxaban"), which may never appear verbatim and previously fell
+    # back to the first 160 characters of the document (its header, not the
+    # actual mention) whenever the chart only ever used the brand name.
+    sub = submission(
+        documents=[
+            {
+                "doc_id": "d1",
+                "type": "Cardiology Consultation",
+                "date": "2026-02-20",
+                "text": (
+                    "CARDIOLOGY CONSULTATION - PERIOPERATIVE\n"
+                    "Date: 02/20/2026\n"
+                    "Reason for consult: perioperative management of anticoagulation.\n\n"
+                    "Patient with atrial fibrillation maintained on Xarelto 20 mg PO daily "
+                    "with evening meal. No history of major bleeding."
+                ),
+            }
+        ]
+    )
+    groups = {g.generic_name: g for g in scan_medication_mentions(sub)}
+    quote = groups["rivaroxaban"].document_mentions[0].provenance.quote
+    assert "Xarelto" in quote
+    assert "reason for consult" not in quote.lower()
+
+
 def test_real_asa_dosing_mention_still_counts_alongside_physical_status_text() -> None:
     sub = submission(
         medications=[{"name": "ASA 81 mg PO daily", "active": True}],

@@ -237,21 +237,32 @@ class DrugMentionGroup(BaseModel):
         return bool(self.document_mentions)
 
 
-def _find_drug_matches(text: str) -> list[tuple[str, DrugClass]]:
-    found: dict[str, DrugClass] = {}
+def _find_drug_matches(text: str) -> list[tuple[str, DrugClass, re.Match[str]]]:
+    """First match of each generic drug in text, keeping the match object itself.
+
+    Keeping the match (not just the generic name) matters: the document text
+    uses whatever alias was actually written there (e.g. "Xarelto"), which is
+    often not the canonical generic name ("rivaroxaban") - so callers that
+    need to quote the surrounding text must anchor on the real match
+    position, not re-search for the generic name (which may never literally
+    appear in the text at all).
+    """
+
+    found: dict[str, tuple[DrugClass, re.Match[str]]] = {}
     for match in _DRUG_ALIAS_RE.finditer(text):
         alias = match.group(1).lower()
         if alias == "asa" and _ASA_CLASS_SUFFIX_RE.match(text, match.end()):
             continue  # anesthesiology risk class, not the drug - see comment above the table
         generic, drug_class = DRUG_ALIASES[alias]
-        found[generic] = drug_class
-    return list(found.items())
+        if generic not in found:
+            found[generic] = (drug_class, match)
+    return [(generic, drug_class, match) for generic, (drug_class, match) in found.items()]
 
 
 def _mentions_from_medication(med: Medication) -> list[MedicationMention]:
     name = med.name or ""
     mentions = []
-    for generic, drug_class in _find_drug_matches(name):
+    for generic, drug_class, _match in _find_drug_matches(name):
         mentions.append(
             MedicationMention(
                 generic_name=generic,
@@ -267,7 +278,7 @@ def _mentions_from_document(doc: Document) -> list[MedicationMention]:
     text = doc.text or ""
     doc_dt = parse_dt(doc.date)
     mentions = []
-    for generic, drug_class in _find_drug_matches(text):
+    for generic, drug_class, match in _find_drug_matches(text):
         mentions.append(
             MedicationMention(
                 generic_name=generic,
@@ -276,7 +287,7 @@ def _mentions_from_document(doc: Document) -> list[MedicationMention]:
                 provenance=Provenance(
                     source="document_text",
                     doc_id=doc.doc_id,
-                    quote=_excerpt_around(text, generic),
+                    quote=_excerpt_at(text, match.start(), match.end()),
                     asserted_at=doc_dt,
                 ),
             )
@@ -284,12 +295,9 @@ def _mentions_from_document(doc: Document) -> list[MedicationMention]:
     return mentions
 
 
-def _excerpt_around(text: str, needle: str, radius: int = 160) -> str:
-    match = re.search(re.escape(needle), text, re.IGNORECASE)
-    if match is None:
-        return text[:radius].strip()
-    start = max(0, match.start() - radius // 2)
-    end = min(len(text), match.end() + radius // 2)
+def _excerpt_at(text: str, match_start: int, match_end: int, radius: int = 160) -> str:
+    start = max(0, match_start - radius // 2)
+    end = min(len(text), match_end + radius // 2)
     return text[start:end].strip()
 
 
